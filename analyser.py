@@ -64,6 +64,7 @@ if uploaded_file:
         if selected_cols:
             # Handle missing values
             df[selected_cols] = df[selected_cols].interpolate(method='linear')
+            df = df.dropna(subset=['TimeIndex'] + selected_cols)
 
             results = []
             for col in selected_cols:
