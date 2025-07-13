@@ -1,148 +1,107 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io
-from sklearn.linear_model import LinearRegression
-import base64
-import matplotlib.pyplot as plt
-from fpdf import FPDF
+from scipy.interpolate import interp1d
 
-# Set page config
-st.set_page_config(page_title="Growth & Instability Analyser — SumanEcon-UAS(B)", layout="centered")
-st.title("📊 Growth & Instability Analyser — SumanEcon-UAS(B)")
+# Function to calculate CAGR
+def calculate_cagr(data, column):
+    start_value = data[column].iloc[0]
+    end_value = data[column].iloc[-1]
+    years = (data.index[-1] - data.index[0]).days / 365.25
+    cagr = (end_value / start_value) ** (1 / (years / 1)) - 1
+    return cagr
 
-st.markdown("""
-This app computes **Compound Annual Growth Rate (CAGR)** and **Cuddy-Della Valle Instability Index (CDVI)** for selected numeric variables.
-Upload your dataset and follow the guided steps below.
-""")
+# Function to calculate CDVI (Cuddy Della Valle Index)
+def calculate_cdvi(data, column):
+    mean_value = data[column].mean()
+    std_dev = data[column].std()
+    cdvi = (std_dev / mean_value) * 100
+    return cdvi
 
-# File uploader
-uploaded_file = st.file_uploader("Upload your CSV, XLS, or XLSX file", type=["csv", "xls", "xlsx"])
+# Function to perform linear interpolation
+def linear_interpolation(data, column):
+    x = np.arange(len(data))
+    y = data[column].values
+    mask = ~np.isnan(y)
+    f = interp1d(x[mask], y[mask], fill_value="extrapolate")
+    interpolated_values = f(x)
+    data[column] = interpolated_values
+    return data
 
-if uploaded_file:
-    try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
+# Main function
+def main():
+    st.title("Growth&Instability analyser--SumanEcon-UAS(B)")
+    st.markdown("For more collaborate with sumanecon.uas@outlook.in")
+
+    # Upload file
+    uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xls", "xlsx"])
+
+    if uploaded_file is not None:
+        # Read file
+        if uploaded_file.type == "text/csv":
+            data = pd.read_csv(uploaded_file)
         else:
-            df = pd.read_excel(uploaded_file)
+            data = pd.read_excel(uploaded_file)
 
-        st.success("File uploaded successfully!")
-        st.subheader("Data Preview")
-        st.dataframe(df.head())
-
-        # Convert object columns to numeric/date if possible
-        for col in df.columns:
-            if df[col].dtype == 'object':
+        # Check data types and transform if required
+        for column in data.columns:
+            if data[column].dtype == "object":
                 try:
-                    df[col] = pd.to_datetime(df[col])
-                except:
+                    data[column] = pd.to_datetime(data[column])
+                except ValueError:
                     try:
-                        df[col] = pd.to_numeric(df[col])
-                    except:
+                        data[column] = pd.to_numeric(data[column])
+                    except ValueError:
                         pass
 
-        # Select time column
-        time_col = st.selectbox("Select Year/Date/Time Column (Independent Variable)", df.columns)
+        # Select numeric columns
+        numeric_columns = [column for column in data.columns if data[column].dtype in ["int64", "float64"]]
 
-        # Convert time column to numeric index if datetime or year
-        if np.issubdtype(df[time_col].dtype, np.datetime64):
-            df = df.sort_values(by=time_col)
-            df['TimeIndex'] = range(1, len(df)+1)
+        # Select Year/Date/Time column
+        date_columns = [column for column in data.columns if data[column].dtype == "datetime64[ns]"]
+        if date_columns:
+            date_column = st.selectbox("Select Year/Date/Time column", date_columns)
+            data.set_index(date_column, inplace=True)
         else:
-            try:
-                df[time_col] = pd.to_numeric(df[time_col])
-                df = df.sort_values(by=time_col)
-                df['TimeIndex'] = df[time_col] - df[time_col].min() + 1
-            except:
-                st.error("Selected time column could not be converted to numeric or datetime.")
+            st.error("No date column found")
+            return
 
-        numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns.tolist()
-        numeric_cols = [col for col in numeric_cols if col != 'TimeIndex']
+        # Select columns for analysis
+        columns_to_analyze = st.multiselect("Select columns for analysis", numeric_columns, default=numeric_columns)
 
-        selected_cols = st.multiselect("Select numeric columns for analysis", options=numeric_cols, default=numeric_cols)
-
-        if selected_cols:
+        if columns_to_analyze:
             # Handle missing values
-            df[selected_cols] = df[selected_cols].interpolate(method='linear')
-            df = df.dropna(subset=['TimeIndex'] + selected_cols)
+            for column in columns_to_analyze:
+                if data[column].isnull().any():
+                    data = linear_interpolation(data, column)
 
+            # Calculate CAGR and CDVI
             results = []
-            for col in selected_cols:
-                y = df[col]
-                t = df['TimeIndex']
-                X = t.values.reshape(-1, 1)
+            for column in columns_to_analyze:
+                cagr = calculate_cagr(data, column)
+                cdvi = calculate_cdvi(data, column)
+                results.append([column, cagr, cdvi])
 
-                # CAGR
-                begin = y.iloc[0]
-                end = y.iloc[-1]
-                n = len(y) - 1
-                cagr = ((end / begin) ** (1 / n) - 1) * 100 if begin > 0 and end > 0 else np.nan
+            # Create results table
+            results_df = pd.DataFrame(results, columns=["Column", "CAGR", "CDVI (Instability)"])
 
-                # CDVI
-                model = LinearRegression().fit(X, np.log(y + 1e-9))
-                r_squared = model.score(X, np.log(y + 1e-9))
-                cv = np.std(y) / np.mean(y) * 100 if np.mean(y) != 0 else np.nan
-                cdvi = cv * np.sqrt(1 - r_squared)
+            # Display results table
+            st.write(results_df)
 
-                results.append({
-                    'Variable': col,
-                    'CAGR (%)': round(cagr, 2),
-                    'CV (%)': round(cv, 2),
-                    'R-squared': round(r_squared, 4),
-                    'CDVI (%)': round(cdvi, 2)
-                })
+            # Download results
+            col1, col2 = st.columns(2)
+            col1.download_button(
+                label="Download results as Excel",
+                data=results_df.to_excel(index=False),
+                file_name="growth_and_instability_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            col2.download_button(
+                label="Download results as PDF",
+                data=results_df.to_csv(index=False).encode("utf-8"),
+                file_name="growth_and_instability_results.pdf",
+                mime="application/pdf"
+            )
 
-            results_df = pd.DataFrame(results)
-            st.subheader("Analysis Results")
-            st.dataframe(results_df)
-
-            # Download as Excel
-            def to_excel(df):
-                output = io.BytesIO()
-                writer = pd.ExcelWriter(output, engine='xlsxwriter')
-                df.to_excel(writer, index=False, sheet_name='Results')
-                writer.close()
-                processed_data = output.getvalue()
-                return processed_data
-
-            excel_data = to_excel(results_df)
-            st.download_button(label='📥 Download Results as Excel',
-                               data=excel_data,
-                               file_name='Growth_Instability_Results.xlsx')
-
-            # Download as PDF
-            class PDF(FPDF):
-                def header(self):
-                    self.set_font('Arial', 'B', 12)
-                    self.cell(0, 10, 'Growth & Instability Analysis Results', ln=True, align='C')
-                    self.ln(10)
-
-                def footer(self):
-                    self.set_y(-15)
-                    self.set_font('Arial', 'I', 8)
-                    self.cell(0, 10, 'For more, collaborate with sumanecon.uas@outlook.in', 0, 0, 'C')
-
-                def table(self, data):
-                    self.set_font("Arial", size=10)
-                    col_width = self.epw / len(data.columns)
-                    for col in data.columns:
-                        self.cell(col_width, 10, str(col), border=1)
-                    self.ln()
-                    for i in range(len(data)):
-                        for val in data.iloc[i]:
-                            self.cell(col_width, 10, str(val), border=1)
-                        self.ln()
-
-            pdf = PDF()
-            pdf.add_page()
-            pdf.table(results_df)
-            pdf_output = io.BytesIO()
-            pdf.output(pdf_output)
-            st.download_button(label="📄 Download Results as PDF", data=pdf_output.getvalue(), file_name="Growth_Instability_Results.pdf")
-
-    except Exception as e:
-        st.error(f"❌ Error: {e}")
-
-# Footer
-st.markdown("---")
-st.markdown("<center><small>For more, collaborate with sumanecon.uas@outlook.in</small></center>", unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()
